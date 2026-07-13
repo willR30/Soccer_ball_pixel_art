@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Pelota de Fútbol Pixel Art Rebotando</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: #0f1a2b;
+    background-image:
+      radial-gradient(circle at 20% 20%, #16233a 0%, transparent 55%),
+      radial-gradient(circle at 80% 80%, #16233a 0%, transparent 55%);
+  }
+  canvas {
+    display: block;
+    cursor: none;
+    image-rendering: pixelated;
+    image-rendering: -moz-crisp-edges;
+    image-rendering: crisp-edges;
+  }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+ctx.imageSmoothingEnabled = false;
+
+function resize() {
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+}
+resize();
+window.addEventListener('resize', resize);
+
+// ============================================================
+//  Interactividad con el mouse: el balon "esquiva" el cursor
+//  y se ve un halo pixelado siguiendo el puntero.
+// ============================================================
+const mouse = { x: -9999, y: -9999, active: false };
+
+window.addEventListener('mousemove', (e) => {
+  mouse.x = e.clientX;
+  mouse.y = e.clientY;
+  mouse.active = true;
+});
+window.addEventListener('mouseleave', () => {
+  mouse.active = false;
+});
+window.addEventListener('touchmove', (e) => {
+  const t = e.touches[0];
+  if (t) {
+    mouse.x = t.clientX;
+    mouse.y = t.clientY;
+    mouse.active = true;
+  }
+}, { passive: true });
+window.addEventListener('touchend', () => { mouse.active = false; });
+
+// ============================================================
+//  Helper de rasterizado "duro": en vez de dibujar formas con
+//  arc()/lineTo() (que el navegador antialiasea SIEMPRE, sin
+//  importar imageSmoothingEnabled), probamos punto por punto
+//  si el centro de cada pixel cae dentro de la figura y
+//  pintamos un fillRect(x,y,1,1) solido. Asi cada pixel queda
+//  100% opaco o 100% transparente = pixel art real, sin bordes
+//  grises ni semitransparentes.
+// ============================================================
+function pointInPolygon(px, py, verts) {
+  let inside = false;
+  for (let i = 0, j = verts.length - 1; i < verts.length; j = i++) {
+    const xi = verts[i].x, yi = verts[i].y;
+    const xj = verts[j].x, yj = verts[j].y;
+    const intersect = ((yi > py) !== (yj > py)) &&
+      (px < (xj - xi) * (py - yi) / (yj - yi) + xi);
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+function pentagonVerts(cx, cy, radius, rotation) {
+  const verts = [];
+  for (let i = 0; i < 5; i++) {
+    const angle = rotation + i * (2 * Math.PI / 5) - Math.PI / 2;
+    verts.push({ x: cx + radius * Math.cos(angle), y: cy + radius * Math.sin(angle) });
+  }
+  return verts;
+}
+
+// ============================================================
+//  Zapato de futbol en pixel art, actua como cursor + obstaculo
+//  contra el que la pelota rebota de verdad.
+// ============================================================
+const SHOE_ART_W = 36;
+const SHOE_ART_H = 24;
+const SHOE_SCALE = 3;
+const SHOE_W = SHOE_ART_W * SHOE_SCALE;
+const SHOE_H = SHOE_ART_H * SHOE_SCALE;
+
+const shoeArt = document.createElement('canvas');
+shoeArt.width = SHOE_ART_W;
+shoeArt.height = SHOE_ART_H;
+const shctx = shoeArt.getContext('2d');
+shctx.imageSmoothingEnabled = false;
+
+// silueta principal de la bota (mirando hacia la derecha), rasterizada
+// pixel por pixel para que no queden bordes antialiaseados
+const shoeOutline = [
+  { x: 4, y: 6 }, { x: 9, y: 4 }, { x: 14, y: 5 }, { x: 24, y: 7 },
+  { x: 31, y: 10 }, { x: 34, y: 13 }, { x: 33, y: 16 }, { x: 30, y: 17 },
+  { x: 8, y: 17 }, { x: 4, y: 15 }, { x: 2, y: 10 }
+];
+
+shctx.fillStyle = '#181818';
+for (let gy = 0; gy < SHOE_ART_H; gy++) {
+  for (let gx = 0; gx < SHOE_ART_W; gx++) {
+    if (pointInPolygon(gx + 0.5, gy + 0.5, shoeOutline)) {
+      shctx.fillRect(gx, gy, 1, 1);
+    }
+  }
+}
+
+// suela clara (ya son rectangulos, quedan nitidos de por si)
+shctx.fillStyle = '#eceae3';
+shctx.fillRect(3, 16, 28, 3);
+
+// tapones de la suela
+shctx.fillStyle = '#a9a89f';
+shctx.fillRect(6, 19, 2, 2);
+shctx.fillRect(14, 19, 2, 2);
+shctx.fillRect(22, 19, 2, 2);
+
+// cordones
+shctx.fillStyle = '#eceae3';
+shctx.fillRect(12, 7, 3, 1);
+shctx.fillRect(15, 8, 3, 1);
+shctx.fillRect(18, 9, 3, 1);
+
+const shoeSprite = document.createElement('canvas');
+shoeSprite.width = SHOE_W;
+shoeSprite.height = SHOE_H;
+const shsctx = shoeSprite.getContext('2d');
+shsctx.imageSmoothingEnabled = false;
+shsctx.drawImage(shoeArt, 0, 0, SHOE_W, SHOE_H);
+
+// radio de colision del zapato contra la pelota
+const SHOE_HIT_RADIUS = 30;
+
+
+window.addEventListener('mousedown', (e) => kickBall(e.clientX, e.clientY));
+window.addEventListener('touchstart', (e) => {
+  const t = e.touches[0];
+  if (t) kickBall(t.clientX, t.clientY);
+}, { passive: true });
+
+function kickBall(mx, my) {
+  const cx = ball.x + ball.size / 2;
+  const cy = ball.y + ball.size / 2;
+  const dx = cx - mx;
+  const dy = cy - my;
+  const dist = Math.max(1, Math.hypot(dx, dy));
+  const power = 14;
+  ball.vx += (dx / dist) * power;
+  ball.vy += (dy / dist) * power;
+  ball.squashX = 0.6; ball.squashY = 1.4;
+}
+
+// ============================================================
+//  Generamos la pelota en pixel art: circulo blanco con
+//  pentagonos negros, estilo balon clasico de futbol.
+// ============================================================
+const ART = 64;             // resolucion base del sprite (baja = pixel art chunky)
+const BALL_SIZE = 192;      // tamaño final en pantalla (3x = pixeles bien visibles)
+
+const artCanvas = document.createElement('canvas');
+artCanvas.width = ART;
+artCanvas.height = ART;
+const actx = artCanvas.getContext('2d');
+actx.imageSmoothingEnabled = false;
+
+const CX = ART / 2;
+const CY = ART / 2;
+const R = ART / 2 - 2;
+
+// armamos la lista de pentagonos: uno central + anillo interior + anillo
+// exterior (este ultimo queda "cortado" por el circulo del balon)
+const pentagons = [pentagonVerts(CX, CY, R * 0.34, 0)];
+
+for (let i = 0; i < 5; i++) {
+  const angle = (i * 2 * Math.PI / 5) + Math.PI / 5 - Math.PI / 2;
+  const dist = R * 0.78;
+  const px = CX + dist * Math.cos(angle);
+  const py = CY + dist * Math.sin(angle);
+  pentagons.push(pentagonVerts(px, py, R * 0.34, Math.PI + i * (2 * Math.PI / 5)));
+}
+
+for (let i = 0; i < 5; i++) {
+  const angle = (i * 2 * Math.PI / 5) - Math.PI / 2;
+  const dist = R * 1.35;
+  const px = CX + dist * Math.cos(angle);
+  const py = CY + dist * Math.sin(angle);
+  pentagons.push(pentagonVerts(px, py, R * 0.34, i * (2 * Math.PI / 5)));
+}
+
+// grid auxiliar: 0 = transparente, 1 = negro (pentagono), 2 = blanco (balon)
+const colorGrid = [];
+for (let gy = 0; gy < ART; gy++) {
+  colorGrid[gy] = [];
+  for (let gx = 0; gx < ART; gx++) {
+    const px = gx + 0.5, py = gy + 0.5;
+    const dx = px - CX, dy = py - CY;
+    if (Math.hypot(dx, dy) > R) {
+      colorGrid[gy][gx] = 0;
+      continue;
+    }
+    let isBlack = false;
+    for (let p = 0; p < pentagons.length; p++) {
+      if (pointInPolygon(px, py, pentagons[p])) { isBlack = true; break; }
+    }
+    colorGrid[gy][gx] = isBlack ? 1 : 2;
+  }
+}
+
+// contorno: cualquier pixel del balon que tenga un vecino transparente
+// se pinta de negro, para lograr el borde duro tipico del pixel art
+function isEdge(gx, gy) {
+  const dirs = [[1,0],[-1,0],[0,1],[0,-1]];
+  for (const [dx, dy] of dirs) {
+    const nx = gx + dx, ny = gy + dy;
+    if (nx < 0 || ny < 0 || nx >= ART || ny >= ART || colorGrid[ny][nx] === 0) return true;
+  }
+  return false;
+}
+
+for (let gy = 0; gy < ART; gy++) {
+  for (let gx = 0; gx < ART; gx++) {
+    const v = colorGrid[gy][gx];
+    if (v === 0) continue;
+    let color;
+    if (v === 1 || isEdge(gx, gy)) color = '#111111';
+    else color = '#f4f4ef';
+    actx.fillStyle = color;
+    actx.fillRect(gx, gy, 1, 1);
+  }
+}
+
+// Escalamos el sprite a resolucion de despliegue manteniendo el look pixelado
+const ballSprite = document.createElement('canvas');
+ballSprite.width = BALL_SIZE;
+ballSprite.height = BALL_SIZE;
+const sctx = ballSprite.getContext('2d');
+sctx.imageSmoothingEnabled = false;
+sctx.drawImage(artCanvas, 0, 0, BALL_SIZE, BALL_SIZE);
+
+// ============================================================
+//  Fisica: rebote libre por toda la pantalla (estilo DVD)
+// ============================================================
+let ball = {
+  x: 120,
+  y: 120,
+  vx: 4.6,
+  vy: 3.7,
+  size: BALL_SIZE,
+  squashX: 1,
+  squashY: 1
+};
+
+function update() {
+  // colision real (rebote) contra el zapato que sigue al mouse
+  if (mouse.active) {
+    const cx = ball.x + ball.size / 2;
+    const cy = ball.y + ball.size / 2;
+    const ballRadius = ball.size * 0.42;
+    // el "punto de contacto" del zapato lo desplazamos un poco desde
+    // la punta del cursor hacia el centro del sprite del zapato
+    const shoeCx = mouse.x + SHOE_W * 0.25;
+    const shoeCy = mouse.y + SHOE_H * 0.35;
+
+    const dx = cx - shoeCx;
+    const dy = cy - shoeCy;
+    const dist = Math.hypot(dx, dy);
+    const minDist = ballRadius + SHOE_HIT_RADIUS;
+
+    if (dist < minDist && dist > 0.001) {
+      const nx = dx / dist;
+      const ny = dy / dist;
+
+      // separamos la pelota para que no quede incrustada en el zapato
+      const overlap = minDist - dist;
+      ball.x += nx * overlap;
+      ball.y += ny * overlap;
+
+      // reflejamos la velocidad respecto a la normal de contacto (rebote real)
+      const dot = ball.vx * nx + ball.vy * ny;
+      if (dot < 0) {
+        ball.vx -= 2 * dot * nx;
+        ball.vy -= 2 * dot * ny;
+      }
+
+      // empujon extra, como si el zapato pateara el balon
+      ball.vx += nx * 3.5;
+      ball.vy += ny * 3.5;
+
+      ball.squashX = 0.65;
+      ball.squashY = 1.35;
+    }
+  }
+
+  // limitamos la velocidad maxima para que no se dispare sin control
+  const maxSpeed = 15;
+  const speed = Math.hypot(ball.vx, ball.vy);
+  if (speed > maxSpeed) {
+    ball.vx = (ball.vx / speed) * maxSpeed;
+    ball.vy = (ball.vy / speed) * maxSpeed;
+  }
+
+  ball.x += ball.vx;
+  ball.y += ball.vy;
+
+  const maxX = canvas.width - ball.size;
+  const maxY = canvas.height - ball.size;
+
+  if (ball.x <= 0) {
+    ball.x = 0;
+    ball.vx *= -1;
+    ball.squashX = 0.7; ball.squashY = 1.3;
+  } else if (ball.x >= maxX) {
+    ball.x = maxX;
+    ball.vx *= -1;
+    ball.squashX = 0.7; ball.squashY = 1.3;
+  }
+
+  if (ball.y <= 0) {
+    ball.y = 0;
+    ball.vy *= -1;
+    ball.squashX = 1.3; ball.squashY = 0.7;
+  } else if (ball.y >= maxY) {
+    ball.y = maxY;
+    ball.vy *= -1;
+    ball.squashX = 1.3; ball.squashY = 0.7;
+  }
+
+  ball.squashX += (1 - ball.squashX) * 0.2;
+  ball.squashY += (1 - ball.squashY) * 0.2;
+}
+
+function drawShadow() {
+  ctx.fillStyle = 'rgba(0,0,0,0.3)';
+  ctx.beginPath();
+  ctx.ellipse(ball.x + ball.size / 2, ball.y + ball.size + 6, ball.size * 0.32, ball.size * 0.08, 0, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function drawShoe() {
+  if (!mouse.active) return;
+  ctx.drawImage(shoeSprite, mouse.x - SHOE_W * 0.1, mouse.y - SHOE_H * 0.25, SHOE_W, SHOE_H);
+}
+
+function draw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  drawShoe();
+  drawShadow();
+
+  ctx.save();
+  const cx = ball.x + ball.size / 2;
+  const cy = ball.y + ball.size / 2;
+  ctx.translate(cx, cy);
+  ctx.scale(ball.squashX, ball.squashY);
+  ctx.drawImage(ballSprite, -ball.size / 2, -ball.size / 2, ball.size, ball.size);
+  ctx.restore();
+}
+
+function loop() {
+  update();
+  draw();
+  requestAnimationFrame(loop);
+}
+
+loop();
+</script>
+</body>
+</html>
